@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Contract Status Manager</title>
+    <link rel="stylesheet" href="style.css">
+    <meta name="author" content="Szymon Gabriel Wojciechowski">
+</head>
+<body>
+
+    <div class="container">
+        <h2>Contract Status Manager</h2>
+        
+        <div class="upload-section">
+            <b>Step 1:</b> <input type="file" id="upload" accept=".xlsx, .xls, .csv" />
+            <button id="load-btn" class="btn">Load selected file</button>
+            <button id="load-cache-btn" class="btn hidden">Load last data</button>
+        </div>
+
+        <div id="table-container"></div>
+        <button id="save-btn" class="btn hidden">Save Excel report</button>
+    </div>
+
+    <script src="lib/scripts/xlsx.full.min.js"></script>
+
+    <script>
+        /* ==========================================================================
+           1. Global variables
+           ========================================================================== */
+        let currentData = [];
+        let tableHeaders = [];
+        const COL_STATUS = 'STATUS';
+        const COL_UWAGI = 'REMARKS';
+        const COL_DATA = 'DATE';
+
+        const STATUS_OPTIONS = [
+            'Active', 'Cancellation', 'Sent', 'In delivery', 'Signed', 
+            'No email acceptance', 'Installation', 'Wrong address', 
+            'Refused', 'Renewed', 'Unissued', 'Deposit',
+            'Different delivery date', 'Recipient absent'
+        ];
+
+        /* ==========================================================================
+           2. Notifications (Toast)
+           ========================================================================== */
+        function msg(text, type = "default") {
+            const old = document.querySelector('.toast-msg');
+            if(old) old.remove();
+            
+            let d = document.createElement('div');
+            d.className = `toast-msg`;
+            let icon = type === 'success' ? '✓' : '!';
+            let iconBg = type === 'success' ? '#2ecc71' : '#f1c40f'; 
+            
+            d.innerHTML = `
+                <div class="toast-icon" style="background: ${iconBg}; color: #000; display: flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 50%; margin-right: 12px; font-weight: bold;">${icon}</div>
+                <div class="toast-content"><div style="font-weight: 600;">${text}</div></div>
+            `;
+            document.body.appendChild(d);
+            setTimeout(() => { 
+                d.style.opacity = '0'; 
+                setTimeout(() => d.remove(), 300); 
+            }, 2500);
+        }
+
+        /* ==========================================================================
+           3. Processing logic - CHARACTER MAPPING FIX ONLY
+           ========================================================================== */
+        function fixPolish(str) {
+            if (typeof str !== 'string') return str;
+            str = str.replace(/SPOSóB ZAWARCIA/gi, 'SPOSÓB ZAWARCIA');
+            
+            const chars = {
+                'Ś': 'ł', '£': 'Ł', '¡': 'ą', '¥': 'Ą', 'ê': 'ę', 'Ê': 'Ę',
+                '¶': 'ś', '¦': 'Ś', 'æ': 'ć', 'Æ': 'Ć', 'ñ': 'ń', 'Ñ': 'Ń',
+                '¿': 'ż', '¯': 'Ż', '¼': 'ź', '¬': 'Ź', 'ł': 'ł', '³': 'ł',
+                'H': 'ą', 'Ħ': 'ą', 'ġ': 'ć', 'Ş': 'ń', 'Ģ': 'ę', 'Ü': 'ó', 'š': 'Ś'
+            };
+            for (let key in chars) str = str.split(key).join(chars[key]);
+            return str;
+        }
+
+        function getMatchedValue(val, options) {
+            if (!val) return "";
+            let input = fixPolish(String(val).trim());
+            let cleanInput = input.toLowerCase();
+            for (let opt of options) {
+                if (cleanInput === opt.toLowerCase().trim()) return opt;
+            }
+            for (let opt of options) {
+                let cleanOpt = opt.toLowerCase().trim();
+                if (cleanInput.includes(cleanOpt) || cleanOpt.includes(cleanInput)) return opt;
+            }
+            return input;
+        }
+
+        /* ==========================================================================
+           4. UI and Rendering
+           ========================================================================== */
+        function drawTable() {
+            let container = document.getElementById('table-container');
+            if (!currentData.length) return;
+            let baseHeaders = tableHeaders.filter(h => h !== COL_STATUS && h !== COL_DATA && h !== COL_UWAGI);
+            
+            let out = '<table><thead><tr>';
+            baseHeaders.forEach(h => out += `<th>${fixPolish(h)}</th>`);
+            out += `<th>${COL_STATUS}</th><th>${COL_DATA}</th></tr></thead><tbody>`;
+
+            currentData.forEach((row, idx) => {
+                out += '<tr>';
+                baseHeaders.forEach(h => {
+                    let cell = row[h] ?? '';
+                    out += `<td>${fixPolish(String(cell))}</td>`;
+                });
+
+                const currentStatus = getMatchedValue(row[COL_STATUS], STATUS_OPTIONS);
+                const d = row[COL_DATA] || '';
+                const isOnList = STATUS_OPTIONS.includes(currentStatus);
+
+                out += `<td><select class="status-select" onchange="updateField(${idx}, '${COL_STATUS}', this.value); updateColor(this)">
+                    <option value="" ${currentStatus===''?'selected':''}>-- select --</option>
+                    ${!isOnList && currentStatus !== "" ? `<option value="${currentStatus}" selected>${currentStatus}</option>` : ''}
+                    ${STATUS_OPTIONS.map(o => `<option value="${o}" ${currentStatus===o?'selected':''}>${o}</option>`).join('')}
+                </select></td>
+                <td><input type="date" class="date-input" value="${d}" onchange="updateField(${idx}, '${COL_DATA}', this.value)"></td>
+                </tr>`;
+            });
+            container.innerHTML = out + '</tbody></table>';
+            document.querySelectorAll('.status-select').forEach(s => updateColor(s));
+        }
+
+        function updateField(idx, field, val) { 
+            currentData[idx][field] = val; 
+            localStorage.setItem('manager_data', JSON.stringify(currentData)); 
+        }
+
+        function updateColor(el) {
+            el.classList.remove('status-tak', 'status-nie', 'status-recall');
+            const v = el.value.toLowerCase();
+            if(v === 'active') el.classList.add('status-tak');
+            else if(v === 'cancellation') el.classList.add('status-nie');
+            else if(v !== "") el.classList.add('status-recall');
+        }
+
+        /* ==========================================================================
+           5. Export and Events
+           ========================================================================== */
+        function exportToExcel() {
+            let baseHeaders = tableHeaders.filter(h => h !== COL_STATUS && h !== COL_DATA && h !== COL_UWAGI);
+            let finalHeaders = [...baseHeaders, COL_STATUS, COL_DATA];
+            
+            let rowCount = currentData.length;
+            let colCount = finalHeaders.length;
+            let filterRange = `R1C1:R${rowCount + 1}C${colCount}`;
+
+            let xml = `<?xml version="1.0"?><?mso-application progid="Excel.Sheet"?>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet" xmlns:html="http://www.w3.org/TR/REC-html40">
+<Styles>
+    <Style ss:ID="Default" ss:Name="Normal"><Alignment ss:Vertical="Bottom"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders></Style>
+    <Style ss:ID="header"><Font ss:Bold="1"/><Interior ss:Color="#D9D9D9" ss:Pattern="Solid"/></Style>
+    <Style ss:ID="sTak"><Interior ss:Color="#C6EFCE" ss:Pattern="Solid"/><Font ss:Color="#006100"/></Style>
+    <Style ss:ID="sNie"><Interior ss:Color="#FFC7CE" ss:Pattern="Solid"/><Font ss:Color="#9C0006"/></Style>
+    <Style ss:ID="sRecall"><Interior ss:Color="#FFEB9C" ss:Pattern="Solid"/><Font ss:Color="#9C6500"/></Style>
+</Styles>
+<Worksheet ss:Name="Report">
+<Table>`;
+
+            xml += '<Row ss:StyleID="header">';
+            finalHeaders.forEach(h => { 
+                let head = fixPolish(h).toUpperCase();
+                xml += `<Cell><Data ss:Type="String">${head}</Data></Cell>`; 
+            });
+            xml += '</Row>';
+
+            currentData.forEach(row => {
+                xml += '<Row>';
+                finalHeaders.forEach(h => {
+                    let val = row[h] ?? '';
+                    let style = '';
+                    if (h === COL_STATUS) {
+                        const v = String(val).toLowerCase();
+                        if (v === 'active') style = ' ss:StyleID="sTak"';
+                        else if (v === 'cancellation') style = ' ss:StyleID="sNie"';
+                        else if (v !== "") style = ' ss:StyleID="sRecall"';
+                    }
+                    let cleanText = fixPolish(String(val)).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                    xml += `<Cell${style}><Data ss:Type="String">${cleanText}</Data></Cell>`;
+                });
+                xml += '</Row>';
+            });
+
+            xml += `</Table>
+<WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel"><Selected/><ProtectObjects>False</ProtectObjects><ProtectScenarios>False</ProtectScenarios></WorksheetOptions>
+<AutoFilter xmlns="urn:schemas-microsoft-com:office:excel" Range="${filterRange}"></AutoFilter>
+</Worksheet></Workbook>`;
+
+            const blob = new Blob([xml], { type: 'application/vnd.ms-excel' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `Report_${new Date().toISOString().slice(0,10)}.xls`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            
+            msg("Saved (Choose 'YES' after opening)", 'success');
+        }
+
+        document.getElementById('load-btn').onclick = () => {
+            let f = document.getElementById('upload').files[0];
+            if(!f) return alert("Select a file!");
+            let r = new FileReader();
+            r.onload = (e) => {
+                let data = new Uint8Array(e.target.result);
+                let wb = XLSX.read(data, {type:'array', cellDates:true});
+                let raw = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], {defval: ''});
+                
+                currentData = raw.map(row => {
+                    let clean = {};
+                    Object.keys(row).forEach(k => {
+                        if(!k.startsWith('__EMPTY')) {
+                            let cleanK = fixPolish(k).toUpperCase().trim();
+                            if(cleanK.includes('STATUS')) {
+                                clean[COL_STATUS] = fixPolish(row[k]);
+                            } else if(cleanK === 'DATA' || (cleanK.startsWith('DATA') && cleanK.length === 4)) {
+                                clean[COL_DATA] = row[k];
+                            } else {
+                                clean[k] = fixPolish(row[k]);
+                            }
+                        }
+                    });
+                    return clean;
+                });
+                
+                if (currentData.length > 0) {
+                    tableHeaders = Object.keys(currentData[0]);
+                    drawTable();
+                    document.getElementById('save-btn').classList.remove('hidden');
+                    msg("File loaded successfully", "success");
+                }
+            };
+            r.readAsArrayBuffer(f);
+        };
+
+        document.getElementById('load-cache-btn').onclick = () => {
+            let cached = localStorage.getItem('manager_data');
+            if(cached) {
+                currentData = JSON.parse(cached);
+                tableHeaders = Object.keys(currentData[0]);
+                drawTable();
+                document.getElementById('save-btn').classList.remove('hidden');
+                msg("Last data loaded", "success");
+            }
+        };
+
+        document.getElementById('save-btn').onclick = exportToExcel;
+
+        if(localStorage.getItem('manager_data')) {
+            document.getElementById('load-cache-btn').classList.remove('hidden');
+        }
+    </script>
+</body>
+</html>
