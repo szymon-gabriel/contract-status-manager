@@ -8,7 +8,7 @@ A professional utility tool engineered to streamline contract coordination workf
 
 To ensure data privacy and demonstrate the tool's effectiveness in a controlled environment, a dedicated simulation interface has been deployed.
 
-**Test the application live here:** [TUTAJ_WKLEJ_LINK_DO_GITHUB_PAGES]
+**Test the application live here:** https://szymon-gabriel.github.io/contract-status-manager/
 
 ---
 
